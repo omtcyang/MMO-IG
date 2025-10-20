@@ -31,7 +31,7 @@ def select_control_images(json_records, required_controls):
 
 def process_inference(input_image, prompt, a_prompt, n_prompt, num_samples, image_resolution, 
                       ddim_steps, guess_mode, strength, scale, seed, eta, model, ddim_sampler):
-    # 保持原始推理函数不变
+    # (这个函数内部逻辑是正确的，无需修改)
     with torch.no_grad():
         img = resize_image(HWC3(input_image), image_resolution)
         H, W, C = img.shape
@@ -66,6 +66,7 @@ def process_inference(input_image, prompt, a_prompt, n_prompt, num_samples, imag
         if config.save_memory:
             model.low_vram_shift(is_diffusing=False)
 
+        # x_samples 输出为 RGB 格式
         x_samples = model.decode_first_stage(samples)
         x_samples = (einops.rearrange(x_samples, 'b c h w -> b h w c') * 127.5 + 127.5).cpu().numpy().clip(0, 255).astype(np.uint8)
 
@@ -116,17 +117,33 @@ def main():
             input_image_path = control['source']
             prompt = control['prompt']
 
-            input_image = cv2.imread(input_image_path)
+            # ：cv2.imread 读取为 BGR 格式
+            input_image_bgr = cv2.imread(input_image_path)
 
-            results = process_inference(input_image, prompt, args.a_prompt, args.n_prompt, args.num_samples, 
-                                        args.image_resolution, args.ddim_steps, args.guess_mode, 
-                                        args.strength, args.scale, args.seed, args.eta, model, ddim_sampler)
+            # ：增加对读取失败的检查
+            if input_image_bgr is None:
+                print(f"警告：无法读取图像 {input_image_path}，跳过此记录。")
+                continue
 
-            for idx, result in enumerate(results):
+            # 将 BGR 转换为 RGB 以匹配模型输入
+            input_image_rgb = cv2.cvtColor(input_image_bgr, cv2.COLOR_BGR2RGB)
+
+            # 将 RGB 图像传入
+            results_rgb = process_inference(input_image_rgb, prompt, args.a_prompt, args.n_prompt, args.num_samples, 
+                                            args.image_resolution, args.ddim_steps, args.guess_mode, 
+                                            args.strength, args.scale, args.seed, args.eta, model, ddim_sampler)
+
+            # ：拿到的 'result_rgb' 是 RGB 格式
+            for idx, result_rgb in enumerate(results_rgb):
                 if total_generated >= args.total_images:
                     break
+                
                 output_path = os.path.join(args.output_dir, f'output_image_{total_generated}.png')
-                cv2.imwrite(output_path, result)
+                
+                #：cv2.imwrite 需要 BGR 格式，因此保存前将 RGB 转回 BGR
+                result_bgr = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
+                
+                cv2.imwrite(output_path, result_bgr)
                 print(f'已保存结果到 {output_path}')
                 total_generated += 1
 
@@ -134,6 +151,11 @@ def main():
             print(f"处理图片时发生错误: {str(e)}")
             print(f"跳过此记录并继续处理下一条。")
             continue
+        
+        #  增加一个总数检查，如果已生成足够图片，可提前退出外层循环
+        if total_generated >= args.total_images:
+            print(f"已生成目标数量 {args.total_images} 张图片，任务完成。")
+            break
 
     print(f"总共生成了 {total_generated} 张图片。")
 

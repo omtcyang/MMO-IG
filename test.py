@@ -24,6 +24,10 @@ ddim_sampler = DDIMSampler(model)
 def process(input_image, prompt, a_prompt, n_prompt, num_samples, image_resolution, ddim_steps, guess_mode, strength, scale, seed, eta):
     with torch.no_grad():
         
+        # 添加了 resize_image 来实际使用 image_resolution 参数
+        # 确保输入图像符合模型期望的分辨率，并保证宽高是 8 的倍数
+        input_image = resize_image(HWC3(input_image), image_resolution)
+        
         H, W, C = input_image.shape
 
         # 检测输入图像
@@ -53,29 +57,45 @@ def process(input_image, prompt, a_prompt, n_prompt, num_samples, image_resoluti
         # 采样
         samples, intermediates = ddim_sampler.sample(ddim_steps, num_samples,
                                                      shape, cond, verbose=False, eta=eta,
-                                                  unconditional_guidance_scale=scale,
-                                               unconditional_conditioning=un_cond)
+                                                     unconditional_guidance_scale=scale,
+                                                     unconditional_conditioning=un_cond)
 
         if config.save_memory:
-            model.low_vram_shiis_diffusing=False
+            # 修复了拼写错误 (shiis_diffusing -> shift(is_diffusing=...))
+            model.low_vram_shift(is_diffusing=False)
 
         # 解码并处理输出图像
+        # x_samples 默认是 RGB 格式
         x_samples = model.decode_first_stage(samples)
         x_samples = (einops.rearrange(x_samples, 'b c h w -> b h w c') * 127.5 + 127.5).cpu().numpy().clip(0, 255).astype(np.uint8)
 
         results = [x_samples[i] for i in range(num_samples)]
-    return  results
+        return results
 
 
 # 推理函数
 def infer(input_image_path, prompt, a_prompt, n_prompt, num_samples=1, image_resolution=512, ddim_steps=20, guess_mode=False, strength=1.0, scale=9.0, seed=-1, eta=0.0):
-    input_image = cv2.imread(input_image_path)  # 从路径读取图像
-    results = process(input_image, prompt, a_prompt, n_prompt, num_samples, image_resolution, ddim_steps, guess_mode, strength, scale, seed, eta)
+    # cv2.imread 默认读取为 BGR 格式
+    input_image_bgr = cv2.imread(input_image_path)  # 从路径读取图像
+    if input_image_bgr is None:
+        print(f"错误：无法在路径 {input_image_path} 找到图像")
+        return
+
+    #将 BGR 转换为 RGB，以匹配模型训练数据
+    input_image_rgb = cv2.cvtColor(input_image_bgr, cv2.COLOR_BGR2RGB)
     
-    # 保存或返回结3
-    for i, result in enumerate(results):
+    # 将 RGB 图像传入 process 函数
+    results_rgb = process(input_image_rgb, prompt, a_prompt, n_prompt, num_samples, image_resolution, ddim_steps, guess_mode, strength, scale, seed, eta)
+    
+    # 修复了注释错字 (结3 -> 结果)
+    # 保存或返回结果
+    for i, result_rgb in enumerate(results_rgb): # 拿到的 result_rgb 是 RGB 格式
         output_path = f"remove1_output_{i}.png"
-        cv2.imwrite(output_path, result)
+        
+        # v2.imwrite 需要 BGR 格式，因此保存前将 RGB 转回 BGR
+        result_bgr = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
+        
+        cv2.imwrite(output_path, result_bgr)
         print(f"Result saved to {output_path}")
 
 # high quality,exact quantity
